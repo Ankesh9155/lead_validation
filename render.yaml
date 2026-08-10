@@ -1,0 +1,43 @@
+# Render Blueprint - https://render.com/docs/blueprint-spec
+#
+# Deploys the web GUI (webapp/) via the Dockerfile at the repo
+# root. Doesn't touch any scraping/validation code; this only
+# describes how Render should build and run it.
+#
+# To use: push this repo to GitHub, then in the Render dashboard
+# choose "New +" -> "Blueprint" and point it at the repo. See
+# README.md ("Hosting the GUI on Render") for full steps.
+
+services:
+  - type: web
+    name: lead-validator-gui
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /login
+    envVars:
+      # Required: shared password the GUI asks for before letting
+      # anyone upload a sheet / cookies or run a scrape. Set your
+      # own value in the Render dashboard (Environment tab) - do
+      # NOT commit a real password into this file.
+      - key: APP_PASSWORD
+        sync: false
+
+      # Signs the login session cookie. Render generates and
+      # stores a random value for you.
+      - key: SECRET_KEY
+        generateValue: true
+
+    # NOTE (free plan): this service has no persistent disk, so
+    # webapp/data/ (uploaded cookies, the in-progress Excel file,
+    # job_meta.json) is wiped whenever the container restarts -
+    # including after the free plan's 15-minute idle spin-down.
+    # Download your output after every batch, and keep a copy of
+    # cookies.json handy to re-upload if a job gets interrupted.
+    # To keep that state across restarts, upgrade this service's
+    # plan and add a persistent disk, e.g.:
+    #
+    # disk:
+    #   name: lead-validator-data
+    #   mountPath: /app/webapp/data
+    #   sizeGB: 1

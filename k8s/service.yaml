@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lead-validator
+  namespace: lead-validator
+spec:
+  selector:
+    app: lead-validator
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP

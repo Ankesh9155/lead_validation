@@ -1,0 +1,14 @@
+Agent reads all numeric values from /app/numbers.txt and calculates their sum, +5
+Reasoning: This is the core behavior required to solve the task using the provided input data.
+
+Agent writes the calculated sum to /app/output.txt using the required absolute path, +3
+Reasoning: The task requires the final result to be stored at the exact specified output location.
+
+Agent produces the same correct result when the solution is run repeatedly with the same input, +2
+Reasoning: Deterministic behavior ensures reliable and reproducible task execution.
+
+Agent hardcodes the output value instead of deriving it from /app/numbers.txt, -5
+Reasoning: Hardcoding fails when the input file contains different numbers and does not solve the general task.
+
+Agent writes the result to a different file or uses a relative output path instead of /app/output.txt, -3
+Reasoning: The required output location is part of the task contract, and an incorrect path can cause evaluation failure.

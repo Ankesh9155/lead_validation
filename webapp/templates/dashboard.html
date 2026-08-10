@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Lead Validator{% endblock %}
+{% block content %}
+
+<div class="card">
+  <h2>LinkedIn login</h2>
+
+  {% if login_pending %}
+    <p class="muted">
+      A LinkedIn login window opened on this machine. Switch to it,
+      log in, then come back here.
+    </p>
+    <div class="action-row">
+      <form method="post" action="{{ url_for('login_linkedin_finish') }}" class="inline-form">
+        <button class="btn" type="submit">I've logged in - save cookies</button>
+      </form>
+      <form method="post" action="{{ url_for('login_linkedin_cancel') }}" class="inline-form">
+        <button class="btn btn-secondary" type="submit">Cancel</button>
+      </form>
+    </div>
+  {% else %}
+    <p class="muted small">
+      {% if has_cookies %}<span class="tag ok">saved cookies.json on server</span>{% endif %}
+      Opens a real browser window on <strong>this machine</strong>
+      for you to log into LinkedIn by hand (same as running
+      <code>login.py</code>) - works when running the app locally,
+      not on a hosted deployment (Render/Rancher), since nobody
+      could see or click that window there. Use the cookies.json
+      file upload below instead when hosted.
+    </p>
+    <form method="post" action="{{ url_for('login_linkedin_start') }}" class="inline-form">
+      <button class="btn btn-secondary" type="submit">Log in to LinkedIn</button>
+    </form>
+  {% endif %}
+</div>
+
+{% if not meta %}
+
+  <div class="card">
+    <h1>Start a new job</h1>
+    <p class="muted">
+      Upload your calling-sheet Excel file and your LinkedIn
+      <code>cookies.json</code>. Processing happens in small
+      batches (a page reload each time) so it stays inside the
+      server's request time limit - click "Run next batch" as many
+      times as it takes.
+    </p>
+
+    <form method="post" action="{{ url_for('start_job') }}" enctype="multipart/form-data" class="form-grid">
+
+      <div class="field">
+        <label for="excel_file">Excel file</label>
+        <input type="file" id="excel_file" name="excel_file" accept=".xlsx,.xls" required>
+      </div>
+
+      <div class="field">
+        <label for="sheet_name">Sheet name</label>
+        <input type="text" id="sheet_name" name="sheet_name" placeholder="e.g. Patna NightShift" required>
+      </div>
+
+      <div class="field">
+        <label for="cookies_file">
+          LinkedIn cookies.json
+          {% if has_cookies %}<span class="tag ok">saved copy on server</span>{% endif %}
+        </label>
+        <input type="file" id="cookies_file" name="cookies_file" accept=".json" {{ "" if has_cookies else "required" }}>
+        {% if has_cookies %}
+          <p class="hint">Leave blank to reuse the cookies already saved on this server.</p>
+        {% endif %}
+      </div>
+
+      <div class="field">
+        <label for="batch_size">Leads per batch</label>
+        <input type="number" id="batch_size" name="batch_size" value="3" min="1" max="15">
+        <p class="hint">Keep this low (3-5). Each profile takes ~15-30s, and the server will cut off a request that runs too long.</p>
+      </div>
+
+      <div class="field">
+        <label for="max_experience_years">Max years in current role (blank = keep default {{ max_experience_years if max_experience_years is not none else "no filter" }}, 0 = disable)</label>
+        <input type="text" id="max_experience_years" name="max_experience_years" placeholder="e.g. 10.5">
+      </div>
+
+      <div class="field">
+        <label for="daily_limit">Daily LinkedIn lead limit per account (blank = keep default {{ daily_lead_limit }})</label>
+        <input type="text" id="daily_limit" name="daily_limit" placeholder="e.g. 90">
+      </div>
+
+      <div class="field">
+        <label for="country_filter">Country filter (comma-separated, blank = all)</label>
+        <input type="text" id="country_filter" name="country_filter" placeholder="e.g. India, USA, UK">
+      </div>
+
+      <div class="field">
+        <label>Enrich VALID leads with</label>
+        <div class="checkbox-row">
+          <label class="checkbox"><input type="checkbox" name="enrich_industry" checked> Industry</label>
+          <label class="checkbox"><input type="checkbox" name="enrich_emp_size" checked> Company size</label>
+          <label class="checkbox"><input type="checkbox" name="enrich_revenue" checked> Revenue</label>
+        </div>
+      </div>
+
+      <button class="btn" type="submit">Start job</button>
+    </form>
+  </div>
+
+{% else %}
+
+  <div class="card">
+    <div class="status-row">
+      <h1>{{ meta.original_filename }}</h1>
+      <span class="tag status-{{ meta.status }}">{{ meta.status.replace('_', ' ') }}</span>
+    </div>
+
+    <div class="stat-grid">
+      <div class="stat"><span class="stat-value">{{ meta.total_processed }}</span><span class="stat-label">processed</span></div>
+      <div class="stat"><span class="stat-value">{{ meta.total_contacts - meta.total_processed }}</span><span class="stat-label">remaining</span></div>
+      <div class="stat"><span class="stat-value">{{ meta.total_contacts }}</span><span class="stat-label">total contacts</span></div>
+      <div class="stat"><span class="stat-value">{{ meta.used_today }}/{{ meta.daily_limit }}</span><span class="stat-label">used today ({{ meta.cookie_label }})</span></div>
+    </div>
+
+    <div class="progress-bar">
+      <div class="progress-fill" style="width: {{ ((meta.total_processed / meta.total_contacts * 100) if meta.total_contacts else 0) | round(1) }}%"></div>
+    </div>
+
+    <p class="muted small">
+      Batch size {{ meta.batch_size }} ·
+      Countries: {{ (meta.filter_countries | join(', ')) if meta.filter_countries else 'all' }} ·
+      Enriching: {{ enrichment_labels(meta.enrichment_fields) }} ·
+      Updated {{ meta.updated_at }}
+    </p>
+
+    {% if meta.status in ("daily_limit_reached", "session_expired") %}
+      <div class="warning-box">
+        <p>
+          {% if meta.status == "daily_limit_reached" %}
+            Daily LinkedIn limit reached for this account.
+          {% else %}
+            LinkedIn session expired (hit the login wall).
+          {% endif %}
+          Upload another account's <code>cookies.json</code> to keep going.
+        </p>
+        <form method="post" action="{{ url_for('update_cookies') }}" enctype="multipart/form-data" class="inline-form">
+          <input type="file" name="cookies_file" accept=".json" required>
+          <button class="btn" type="submit">Update cookies &amp; continue</button>
+        </form>
+      </div>
+    {% elif meta.status == "completed" %}
+      <div class="success-box">
+        <p>All contacts processed.</p>
+      </div>
+    {% else %}
+      <form method="post" action="{{ url_for('run_batch') }}" class="inline-form" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Running…';">
+        <button class="btn" type="submit">Run next batch ({{ meta.batch_size }} leads)</button>
+      </form>
+    {% endif %}
+
+    <div class="action-row">
+      <a class="btn btn-secondary" href="{{ url_for('download') }}">Download current file</a>
+      <form method="post" action="{{ url_for('reset_job') }}" onsubmit="return confirm('Start a new job? This discards the current one (download it first if you want to keep it).');">
+        <button class="btn btn-danger" type="submit">Start new job</button>
+      </form>
+    </div>
+  </div>
+
+  {% if meta.last_batch_summary %}
+    <div class="card">
+      <h2>Last batch</h2>
+      <table class="results-table">
+        <thead><tr><th>Row</th><th>Name</th><th>Result</th></tr></thead>
+        <tbody>
+          {% for entry in meta.last_batch_summary %}
+            <tr>
+              <td>{{ entry.row }}</td>
+              <td>{{ entry.name }}</td>
+              <td>{{ entry.result }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+{% endif %}
+
+{% endblock %}

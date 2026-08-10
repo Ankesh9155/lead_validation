@@ -1,0 +1,33 @@
+# Exposes the Service outside the cluster. Edit `host` to your
+# real domain first. Assumes an nginx ingress controller, which
+# Rancher's default RKE/RKE2 clusters ship with - check
+# Cluster Explorer -> Service Discovery -> Ingresses for what your
+# cluster actually has if this doesn't work as-is.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: lead-validator
+  namespace: lead-validator
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"  # allow large Excel/cookie uploads
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    # Uncomment if using cert-manager for automatic TLS certs:
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: lead-validator.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: lead-validator
+                port:
+                  name: http
+  # tls:
+  #   - hosts:
+  #       - lead-validator.example.com
+  #     secretName: lead-validator-tls

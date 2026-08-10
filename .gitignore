@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local LinkedIn session + usage tracking
+cookies.json
+linkedin_usage.json
+
+# Web GUI runtime data
+webapp/data/*
+!webapp/data/.gitkeep
+
+# Kubernetes secrets
+k8s/secret.yaml
+
+# Local Excel / generated files
+*.xlsx
+*.xls
+*.csv
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

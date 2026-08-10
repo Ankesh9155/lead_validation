@@ -1,0 +1,18 @@
+# Persists webapp/data/ (uploaded cookies.json, the in-progress
+# Excel file, job_meta.json) across pod restarts. ReadWriteOnce is
+# fine since the Deployment below always runs a single replica.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lead-validator-data
+  namespace: lead-validator
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Uncomment and set to a StorageClass your Rancher cluster
+  # provides (check Cluster Explorer -> Storage -> StorageClasses)
+  # if the default class isn't what you want:
+  # storageClassName: longhorn
