@@ -165,6 +165,16 @@ No Blueprint? You can instead create the service by hand: **New +**
   with nobody watching, so a checkpoint will just time out after 3
   minutes. Make sure `cookies.json` is a currently-valid, already
   logged-in session before uploading it.
+- **No "Log in to LinkedIn" button on hosted deployments.** That
+  button opens a real browser window on whatever machine runs the
+  server - useful locally, meaningless on Render/Rancher since the
+  window opens on the server, not your screen. The GUI hides it
+  automatically there (Render is detected via Render's own `RENDER`
+  env var; the Kubernetes/Rancher manifests set `HOSTED_DEPLOYMENT=true`
+  explicitly - see `k8s/deployment.yaml`) and shows only the
+  `cookies.json` upload field. To get a `cookies.json`, run this app
+  locally (or `python login.py`) once, log in by hand, then upload
+  the file it saves to the hosted instance.
 
 ### Before you push: existing secrets in this repo
 
