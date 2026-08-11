@@ -89,6 +89,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CURRENT_XLSX = os.path.join(DATA_DIR, "current.xlsx")
 COOKIES_PATH = os.path.join(DATA_DIR, "cookies.json")
 JOB_META_PATH = os.path.join(DATA_DIR, "job_meta.json")
+CREDENTIALS_PATH = os.path.join(DATA_DIR, "linkedin_credentials.json")
 
 WORKING_SHEET_NAME = "Sheet1"  # pandas' default to_excel() sheet name
 
@@ -290,6 +291,68 @@ def now_iso():
 
 
 # ==================================================
+# LinkedIn email/password auto-login (dashboard-managed).
+#
+# linkedin_scraper/browser.py already has a full auto-login flow
+# (_ensure_linkedin_session / login_linkedin_with_credentials) that
+# runs on every start_browser() call and logs in automatically
+# whenever cookies.json is missing or expired - but it only reads
+# config.LINKEDIN_EMAIL / config.LINKEDIN_PASSWORD, which used to be
+# settable only by hand-editing config.py. These helpers persist
+# those two values from the dashboard into a JSON file (same pattern
+# as load_job_meta/save_job_meta above) and push them into `config`
+# at import time and on every save/clear, so browser.py needs no
+# changes at all. This is the only way a hosted deployment (where
+# the "Log in to LinkedIn" browser-window flow doesn't work - see
+# is_hosted_deployment() below) can get authenticated without
+# someone running the app locally first to produce a cookies.json.
+# ==================================================
+
+def load_linkedin_credentials():
+
+    if not os.path.exists(CREDENTIALS_PATH):
+        return None
+
+    try:
+        with open(CREDENTIALS_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def _apply_linkedin_credentials():
+
+    creds = load_linkedin_credentials()
+
+    config.LINKEDIN_EMAIL = (creds or {}).get("email", "")
+    config.LINKEDIN_PASSWORD = (creds or {}).get("password", "")
+
+
+def save_linkedin_credentials(email, password):
+
+    with open(CREDENTIALS_PATH, "w") as f:
+        json.dump({"email": email, "password": password}, f, indent=2)
+
+    _apply_linkedin_credentials()
+
+
+def _clear_linkedin_credentials():
+
+    try:
+        if os.path.exists(CREDENTIALS_PATH):
+            os.remove(CREDENTIALS_PATH)
+    except Exception:
+        pass
+
+    _apply_linkedin_credentials()
+
+
+# Picks up any credentials saved on a previous run (persisted volume
+# survives pod/process restarts) as soon as this module loads.
+_apply_linkedin_credentials()
+
+
+# ==================================================
 # Re-implementations of main.py's ask_country_filter() /
 # pending-row logic, minus the input() prompt - same
 # normalize_text/expand_country_alias rules, just sourced
@@ -360,6 +423,7 @@ def enrichment_labels(enrichment_fields):
 async def dashboard(request: Request, _auth: None = Depends(login_required)):
 
     meta = load_job_meta()
+    linkedin_creds = load_linkedin_credentials()
 
     return render(
         request,
@@ -368,6 +432,8 @@ async def dashboard(request: Request, _auth: None = Depends(login_required)):
         has_cookies=os.path.exists(COOKIES_PATH),
         login_pending=_login_state["active"],
         is_hosted=is_hosted_deployment(),
+        has_linkedin_credentials=bool(linkedin_creds and linkedin_creds.get("email")),
+        saved_linkedin_email=(linkedin_creds or {}).get("email", ""),
         max_experience_years=getattr(config, "MAX_EXPERIENCE_YEARS", None),
         daily_lead_limit=getattr(config, "DAILY_LEAD_LIMIT", 90),
         enrichment_labels=enrichment_labels,
@@ -406,14 +472,21 @@ async def start_job(
         flash(request, "Please choose an Excel file to upload.")
         return redirect_to(request, "dashboard")
 
+    has_linkedin_credentials = bool(
+        getattr(config, "LINKEDIN_EMAIL", "").strip()
+        and getattr(config, "LINKEDIN_PASSWORD", "").strip()
+    )
+
     if cookies_file and cookies_file.filename:
         with open(COOKIES_PATH, "wb") as f:
             f.write(await cookies_file.read())
-    elif not os.path.exists(COOKIES_PATH):
+    elif not os.path.exists(COOKIES_PATH) and not has_linkedin_credentials:
         flash(
             request,
-            "Please upload your LinkedIn cookies.json - no saved "
-            "session was found on the server yet.",
+            "Please upload your LinkedIn cookies.json, or save your "
+            "LinkedIn email/password below, before starting a job - "
+            "no saved session or credentials were found on the "
+            "server yet.",
         )
         return redirect_to(request, "dashboard")
 
@@ -511,6 +584,8 @@ async def start_job(
             cookies_file.filename
             if (cookies_file and cookies_file.filename)
             else "(reused previously uploaded cookies)"
+            if os.path.exists(COOKIES_PATH)
+            else "(will auto-login with saved credentials)"
         ),
         "used_today": load_usage(COOKIES_PATH),
         "daily_limit": getattr(config, "DAILY_LEAD_LIMIT", 90),
@@ -557,8 +632,18 @@ def _run_batch(request: Request):
         flash(request, "This job is already complete - download it below, or start a new one.")
         return redirect_to(request, "dashboard")
 
-    if not os.path.exists(COOKIES_PATH):
-        flash(request, "No cookies.json on file - upload one to continue.")
+    has_linkedin_credentials = bool(
+        getattr(config, "LINKEDIN_EMAIL", "").strip()
+        and getattr(config, "LINKEDIN_PASSWORD", "").strip()
+    )
+
+    if not os.path.exists(COOKIES_PATH) and not has_linkedin_credentials:
+        flash(
+            request,
+            "No cookies.json on file and no LinkedIn credentials "
+            "saved - upload a cookies.json or save credentials to "
+            "continue.",
+        )
         return redirect_to(request, "dashboard")
 
     try:
@@ -599,7 +684,21 @@ def _run_batch(request: Request):
     try:
         start_browser(cookie_file=COOKIES_PATH)
     except Exception as e:
-        flash(request, f"Browser start error: {e}")
+        msg = f"Browser start error: {e}"
+        # A credentials-based auto-login (see linkedin_scraper/browser.py's
+        # login_linkedin_with_credentials) that hits a LinkedIn
+        # "checkpoint" (2FA/verification challenge) raises exactly
+        # this kind of RuntimeError after waiting 3 minutes for a
+        # human to solve it in the browser window - impossible on a
+        # hosted deployment, where nobody can see that window.
+        if "checkpoint" in str(e).lower() and is_hosted_deployment():
+            msg += (
+                " LinkedIn checkpoints can't be solved on a hosted "
+                "deployment - log in from a normal browser/IP once "
+                "locally, then upload the resulting cookies.json "
+                "instead."
+            )
+        flash(request, msg)
         return redirect_to(request, "dashboard")
 
     try:
@@ -786,6 +885,41 @@ async def update_cookies(
     _mark_cookies_refreshed(cookies_file.filename)
 
     flash(request, "Cookies updated. Click \"Start Validation\" to resume.")
+    return redirect_to(request, "dashboard")
+
+
+@app.post("/update-linkedin-credentials", name="update_linkedin_credentials")
+async def update_linkedin_credentials(
+    request: Request,
+    linkedin_email: str = Form(""),
+    linkedin_password: str = Form(""),
+    _auth: None = Depends(login_required),
+):
+
+    email = linkedin_email.strip()
+    password = linkedin_password  # not stripped - LinkedIn passwords can be whitespace-sensitive
+
+    if not email or not password:
+        flash(request, "Enter both a LinkedIn email and password to save.")
+        return redirect_to(request, "dashboard")
+
+    save_linkedin_credentials(email, password)
+
+    flash(
+        request,
+        "LinkedIn credentials saved. They'll be used to log in "
+        "automatically the next time a batch runs without a valid "
+        "session.",
+    )
+    return redirect_to(request, "dashboard")
+
+
+@app.post("/clear-linkedin-credentials", name="clear_linkedin_credentials")
+async def clear_linkedin_credentials(request: Request, _auth: None = Depends(login_required)):
+
+    _clear_linkedin_credentials()
+
+    flash(request, "Saved LinkedIn credentials cleared from this server.")
     return redirect_to(request, "dashboard")
 
 

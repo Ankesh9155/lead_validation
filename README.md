@@ -146,11 +146,12 @@ No Blueprint? You can instead create the service by hand: **New +**
 - **Free Render plan = no persistent disk.** Render's free web
   services don't keep local files across a restart, and the service
   spins down after ~15 minutes idle. An in-progress job's working
-  file and uploaded cookies are lost on the next spin-up - download
-  your output after each batch, and keep `cookies.json` handy to
-  re-upload. A paid Render plan + attached disk (commented out in
-  `render.yaml`), or the Rancher/Kubernetes deployment above (which
-  includes a PersistentVolumeClaim by default), avoids this.
+  file, uploaded cookies, and any saved LinkedIn auto-login
+  credentials are lost on the next spin-up - download your output
+  after each batch, and keep `cookies.json` handy to re-upload. A
+  paid Render plan + attached disk (commented out in `render.yaml`),
+  or the Rancher/Kubernetes deployment above (which includes a
+  PersistentVolumeClaim by default), avoids this.
 - **Batch size vs. request timeouts.** Any proxy/ingress in front of
   this app (Render's, or an nginx Ingress on Kubernetes) cuts off
   HTTP requests that run too long. The Playwright scraper takes
@@ -175,6 +176,16 @@ No Blueprint? You can instead create the service by hand: **New +**
   `cookies.json` upload field. To get a `cookies.json`, run this app
   locally (or `python login.py`) once, log in by hand, then upload
   the file it saves to the hosted instance.
+- **Auto-login with email/password (alternative to cookies.json).**
+  The dashboard's "LinkedIn login" card also lets you save a
+  LinkedIn email/password directly - the server then logs in
+  automatically whenever a batch starts without a valid session,
+  which is the only way to authenticate a hosted deployment without
+  ever running the app locally. Credentials are stored in plaintext
+  on the server's disk (`webapp/data/linkedin_credentials.json`,
+  same persistence caveats as `cookies.json` above) - use "Clear
+  saved credentials" when you're done, and note the 2FA/checkpoint
+  limitation above still applies to this login just like any other.
 
 ### Before you push: existing secrets in this repo
 
