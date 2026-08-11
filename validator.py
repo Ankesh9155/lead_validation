@@ -860,11 +860,33 @@ def validate_lead(row, linkedin_data, filter_countries=None):
 
     # ------------------------------
     # Current Employee Validation
+    #
+    # NO LONGER fires whenever there's no confirmed evidence this
+    # person is CURRENTLY at the company the calling sheet expects -
+    # per request, that now covers three separate signals, not just
+    # one:
+    #   1. The latest role's date line has no "Present" keyword
+    #      (it's a past role, not a current one) - already covered
+    #      by current_employee below.
+    #   2. The latest role has no date line at all (parser.py's
+    #      extract_current_experience() already treats "no date
+    #      found" as current_employee=False rather than guessing) -
+    #      also already covered by current_employee below.
+    #   3. NEW: the company itself doesn't match (company_ok, from
+    #      the Company Name Validation above) - even if LinkedIn
+    #      shows a clearly current, dated "Present" role, it's at a
+    #      DIFFERENT company than the sheet expects, which means
+    #      they're no longer at the company being called about.
+    #      COMPANY still fires on its own too (kept separate on
+    #      purpose) - this just makes sure a company mismatch always
+    #      shows NO LONGER as well, e.g. "INVALID - COMPANY, NO
+    #      LONGER", instead of leaving NO LONGER off just because
+    #      some OTHER employer's role happened to be dated/current.
     # ------------------------------
 
-    if not linkedin_data.get(
-        "current_employee",
-        False
+    if (
+        not linkedin_data.get("current_employee", False)
+        or not company_ok
     ):
         errors.append(
             "NO LONGER"

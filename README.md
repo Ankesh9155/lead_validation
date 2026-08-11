@@ -126,11 +126,15 @@ No Blueprint? You can instead create the service by hand: **New +**
 1. Upload your Excel file, the sheet name, and your LinkedIn
    `cookies.json`, plus any options (experience filter, country
    filter, which enrichment fields to fetch, leads per batch).
-2. Click **Run next batch** repeatedly. Each click processes a
-   handful of leads (default 3), saves progress into the working
-   file, and updates the on-screen counters - exactly like re-running
+2. Click **Start Validation** once. Behind the scenes the server
+   still processes a handful of leads per request (default 3, so no
+   single request runs long enough for a reverse proxy to kill it),
+   but the page automatically resubmits itself after each batch -
+   saving progress into the working file and updating the on-screen
+   counters - until the whole sheet is done, exactly like re-running
    `main.py` picks up where it left off, via the same `Validation 2`
-   column.
+   column. Keep the tab open while it runs; a **Stop auto-run**
+   button appears if you want to pause it.
 3. Click **Download current file** any time to grab the sheet as-is,
    finished or not.
 4. If LinkedIn's daily limit is hit or the session expires, the GUI

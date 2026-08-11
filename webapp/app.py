@@ -19,8 +19,12 @@
 # ~15-30s with the real-browser scraper. So one click processes
 # `batch_size` leads, saves progress into the working Excel file,
 # and the "Validation 2" column (already how main.py tracks resume
-# state) is what lets you click "Run next batch" repeatedly - or
-# close the tab and come back later - until the sheet is done.
+# state) is what the dashboard's auto-run JS (webapp/templates/
+# dashboard.html) uses to keep resubmitting "Start Validation" on
+# its own after every batch, so a single click drives the whole
+# sheet instead of making you click "Run next batch" by hand each
+# time - or you can close the tab and come back later, and pick up
+# where the last completed batch left off.
 
 import os
 import sys
@@ -57,7 +61,7 @@ from playwright.sync_api import sync_playwright
 
 import config
 
-from excel_handler import read_excel, save_excel
+from excel_handler import read_excel, save_excel, list_sheet_names
 from validator import normalize_text, expand_country_alias
 
 from linkedin_scraper.browser import (
@@ -120,6 +124,16 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 # released from a later one; that's fine, threading.Lock doesn't
 # care which thread/request releases it.
 _batch_lock = threading.Lock()
+
+# Set by /stop-validation, checked by _run_batch between rows.
+# /run-batch runs synchronously for the whole batch (up to 15 leads,
+# ~15-30s each), so a "Stop Validation" click has to reach the batch
+# already in flight via shared state like this rather than just
+# withholding the next request - there's no way to cancel a lead
+# that's already mid-scrape, but this stops before the NEXT one
+# starts, and whatever finished already is already saved (see the
+# save_excel() call after the batch loop in _run_batch).
+_stop_event = threading.Event()
 
 # State for the "Log in to LinkedIn" button - runs the same flow as
 # login.py (a real, visible browser window you log into by hand),
@@ -368,10 +382,6 @@ async def start_job(
         flash(request, "Please choose an Excel file to upload.")
         return redirect_to(request, "dashboard")
 
-    if not sheet_name:
-        flash(request, "Please enter the exact sheet name from your Excel file.")
-        return redirect_to(request, "dashboard")
-
     if cookies_file and cookies_file.filename:
         with open(COOKIES_PATH, "wb") as f:
             f.write(await cookies_file.read())
@@ -387,6 +397,44 @@ async def start_job(
     upload_path = os.path.join(DATA_DIR, "upload_original" + upload_ext)
     with open(upload_path, "wb") as f:
         f.write(await excel_file.read())
+
+    # Sheet name only needs to come from the form when the file
+    # actually HAS more than one tab - most calling sheets are a
+    # single tab, and making everyone type the exact tab name for
+    # those was pure friction. Single-tab files are auto-detected;
+    # only a genuinely multi-tab upload (with no sheet_name typed,
+    # or one that doesn't match any tab in THIS file) stops here to
+    # ask which one to use.
+    try:
+        available_sheets = list_sheet_names(upload_path)
+    except Exception as e:
+        flash(request, f"Excel read error: {e}")
+        return redirect_to(request, "dashboard")
+
+    if sheet_name:
+        if sheet_name not in available_sheets:
+            case_insensitive_match = next(
+                (s for s in available_sheets if s.lower() == sheet_name.lower()),
+                None,
+            )
+            if case_insensitive_match:
+                sheet_name = case_insensitive_match
+            else:
+                flash(
+                    request,
+                    f"No sheet named \"{sheet_name}\" in this file. "
+                    f"Available sheets: {', '.join(available_sheets)}",
+                )
+                return redirect_to(request, "dashboard")
+    elif len(available_sheets) == 1:
+        sheet_name = available_sheets[0]
+    else:
+        flash(
+            request,
+            "This file has more than one sheet - enter which one to "
+            f"use. Available sheets: {', '.join(available_sheets)}",
+        )
+        return redirect_to(request, "dashboard")
 
     try:
         data = read_excel(upload_path, sheet_name)
@@ -452,7 +500,7 @@ async def start_job(
 
     save_job_meta(meta)
 
-    flash(request, "Job started. Click \"Run next batch\" to begin scraping.")
+    flash(request, "Job started. Click \"Start Validation\" once - it will keep going on its own.")
     return redirect_to(request, "dashboard")
 
 
@@ -507,6 +555,14 @@ def _run_batch(request: Request):
 
     batch_indices = pending_indices[: meta["batch_size"]]
 
+    # A stop request left over from a click with no batch actually
+    # running (e.g. between auto-run reloads) would otherwise abort
+    # this brand-new batch before it processes a single row. Any
+    # stop meant for a batch that's already running gets set AFTER
+    # this point instead, once that batch's loop below is underway,
+    # so clearing here can't swallow a genuine in-flight stop.
+    _stop_event.clear()
+
     used_today = meta.get("used_today", 0)
     daily_limit = meta.get("daily_limit")
     enrichment_fields = meta.get("enrichment_fields")
@@ -525,6 +581,11 @@ def _run_batch(request: Request):
     try:
 
         for index in batch_indices:
+
+            if _stop_event.is_set():
+                _stop_event.clear()
+                stop_reason = "stopped_by_user"
+                break
 
             row = data.loc[index]
 
@@ -636,11 +697,34 @@ def _run_batch(request: Request):
             "LinkedIn session expired (hit the login wall). Upload "
             "a fresh cookies.json below to keep going.",
         )
+    elif stop_reason == "stopped_by_user":
+        meta["status"] = "stopped"
+        flash(
+            request,
+            f"Validation stopped. {len(batch_log)} contact(s) in this "
+            f"batch were already validated and saved - download below, "
+            f"or click \"Start Validation\" to continue with the rest.",
+        )
     else:
         meta["status"] = "in_progress"
         flash(request, f"Processed {len(batch_log)} contact(s) this batch.")
 
     save_job_meta(meta)
+    return redirect_to(request, "dashboard")
+
+
+@app.post("/stop-validation", name="stop_validation")
+async def stop_validation(request: Request, _auth: None = Depends(login_required)):
+    # `async def`, deliberately not `def` (threadpool) - this must be
+    # handled immediately even while /run-batch is occupying the
+    # threadpool with a running batch. It only sets a flag; the
+    # actual stop happens in _run_batch's loop, between rows.
+    _stop_event.set()
+    flash(
+        request,
+        "Stop requested - finishing the lead currently in progress, "
+        "then saving and stopping.",
+    )
     return redirect_to(request, "dashboard")
 
 
@@ -677,7 +761,7 @@ async def update_cookies(
 
     _mark_cookies_refreshed(cookies_file.filename)
 
-    flash(request, "Cookies updated. Click \"Run next batch\" to continue.")
+    flash(request, "Cookies updated. Click \"Start Validation\" to resume.")
     return redirect_to(request, "dashboard")
 
 
@@ -756,7 +840,7 @@ def login_linkedin_finish(request: Request, _auth: None = Depends(login_required
 
     try:
         _login_context.storage_state(path=COOKIES_PATH)
-        flash(request, "cookies.json saved. Click \"Run next batch\" to continue.")
+        flash(request, "cookies.json saved. Click \"Start Validation\" to resume.")
         _mark_cookies_refreshed("(saved via Log in to LinkedIn)")
     except Exception as e:
         flash(request, f"Could not save cookies - the login window may have been closed already: {e}")

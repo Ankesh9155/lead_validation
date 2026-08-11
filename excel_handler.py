@@ -43,6 +43,27 @@ def read_excel(file_name, sheet_name):
 
 
 # ==========================================
+# List Sheet Names
+# ==========================================
+
+def list_sheet_names(file_name):
+
+    if not os.path.exists(file_name):
+        raise FileNotFoundError(
+            f"Excel file not found: {file_name}"
+        )
+
+    try:
+        return pd.ExcelFile(file_name).sheet_names
+
+    except Exception as e:
+
+        raise Exception(
+            f"Unable to read Excel file: {e}"
+        )
+
+
+# ==========================================
 # Save Excel File
 # ==========================================
 

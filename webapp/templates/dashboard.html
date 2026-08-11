@@ -41,9 +41,11 @@
     <p class="muted">
       Upload your calling-sheet Excel file and your LinkedIn
       <code>cookies.json</code>. Processing happens in small
-      batches (a page reload each time) so it stays inside the
-      server's request time limit - click "Run next batch" as many
-      times as it takes.
+      batches behind the scenes (a page reload each time, to stay
+      inside the server's request time limit), but you only need to
+      click <strong>Start Validation</strong> once - the dashboard
+      keeps submitting the next batch automatically until every
+      contact is validated.
     </p>
 
     <form method="post" action="{{ url_for('start_job') }}" enctype="multipart/form-data" class="form-grid">
@@ -54,8 +56,9 @@
       </div>
 
       <div class="field">
-        <label for="sheet_name">Sheet name</label>
-        <input type="text" id="sheet_name" name="sheet_name" placeholder="e.g. Patna NightShift" required>
+        <label for="sheet_name">Sheet name (only if your file has more than one tab)</label>
+        <input type="text" id="sheet_name" name="sheet_name" placeholder="leave blank for single-tab files">
+        <p class="hint">Single-tab files are detected automatically. Only fill this in if your file has multiple sheets/tabs - type the exact one to use.</p>
       </div>
 
       <div class="field">
@@ -103,6 +106,16 @@
     </form>
   </div>
 
+  <script>
+    // No job in progress (fresh start, or just reset) - clear any
+    // leftover auto-run flag from a previous job so the next one
+    // always needs its own explicit "Start Validation" click rather
+    // than silently resuming on page load.
+    localStorage.removeItem("leadValidatorAutoRun");
+    localStorage.removeItem("leadValidatorAutoRunLastProcessed");
+    localStorage.removeItem("leadValidatorAutoRunStallCount");
+  </script>
+
 {% else %}
 
   <div class="card">
@@ -129,6 +142,16 @@
       Updated {{ meta.updated_at }}
     </p>
 
+    {% if meta.status == "stopped" %}
+      <div class="warning-box">
+        <p>
+          Validation stopped by request. Contacts already processed
+          are saved - download below, or click "Start Validation" to
+          continue with the rest.
+        </p>
+      </div>
+    {% endif %}
+
     {% if meta.status in ("daily_limit_reached", "session_expired") %}
       <div class="warning-box">
         <p>
@@ -149,9 +172,13 @@
         <p>All contacts processed.</p>
       </div>
     {% else %}
-      <form method="post" action="{{ url_for('run_batch') }}" class="inline-form" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Running…';">
-        <button class="btn" type="submit">Run next batch ({{ meta.batch_size }} leads)</button>
+      <form id="run-batch-form" method="post" action="{{ url_for('run_batch') }}" class="inline-form"
+            onsubmit="window.leadValidatorStartAutoRun(this);">
+        <button id="run-batch-btn" class="btn" type="submit">Start Validation</button>
+        <button id="stop-validation-btn" class="btn btn-danger" type="button"
+                style="display:none" onclick="window.leadValidatorStopValidation();">Stop Validation</button>
       </form>
+      <p id="auto-run-status" class="muted small"></p>
     {% endif %}
 
     <div class="action-row">
@@ -179,6 +206,102 @@
       </table>
     </div>
   {% endif %}
+
+  <script>
+    // Auto-continue "Start Validation": one click drives the whole
+    // sheet. /run-batch still only processes `batch_size` leads per
+    // request (the server enforces that so no single request runs
+    // past the reverse-proxy's timeout), so this just resubmits the
+    // same form again after every page reload - via localStorage,
+    // so it keeps going even if the batch that just ran came from
+    // an earlier page load - until the job is done or needs input
+    // from you (daily limit hit, session expired, or stalls with no
+    // progress for a couple of batches in a row, e.g. a persistent
+    // error).
+    (function () {
+      var AUTO_KEY = "leadValidatorAutoRun";
+      var LAST_PROCESSED_KEY = "leadValidatorAutoRunLastProcessed";
+      var STALL_KEY = "leadValidatorAutoRunStallCount";
+      var STALL_LIMIT = 3;
+
+      var status = "{{ meta.status }}";
+      var processed = {{ meta.total_processed }};
+      var total = {{ meta.total_contacts }};
+
+      var form = document.getElementById("run-batch-form");
+      var startBtn = document.getElementById("run-batch-btn");
+      var stopBtn = document.getElementById("stop-validation-btn");
+      var statusBox = document.getElementById("auto-run-status");
+
+      function setStatusText(text) {
+        if (statusBox) statusBox.textContent = text;
+      }
+
+      function stopAutoRun(message) {
+        localStorage.removeItem(AUTO_KEY);
+        localStorage.removeItem(LAST_PROCESSED_KEY);
+        localStorage.removeItem(STALL_KEY);
+        if (message) setStatusText(message);
+      }
+
+      // Exposed so the inline onsubmit/onclick handlers above can
+      // reach it without a second <script> block.
+      window.leadValidatorStartAutoRun = function (formEl) {
+        localStorage.setItem(AUTO_KEY, "1");
+        localStorage.removeItem(STALL_KEY);
+        var btn = formEl.querySelector("#run-batch-btn");
+        if (btn) { btn.disabled = true; btn.textContent = "Validating…"; }
+        // Show the Stop button from the very first click too, not
+        // just once an auto-resubmitted batch reaches this script
+        // again - otherwise there's no way to stop the batch that's
+        // in flight right now.
+        if (stopBtn) stopBtn.style.display = "";
+      };
+
+      // Stops the auto-resubmit loop AND signals the server to break
+      // out of the batch that's currently running (between rows -
+      // whatever finished already is saved). The POST fires while
+      // the in-flight /run-batch request is still pending; both
+      // requests run concurrently, so this doesn't wait for it.
+      window.leadValidatorStopValidation = function () {
+        stopAutoRun("Stopping - finishing the lead in progress, then saving. This page will update shortly.");
+        if (stopBtn) { stopBtn.disabled = true; stopBtn.textContent = "Stopping…"; }
+        fetch("{{ url_for('stop_validation') }}", { method: "POST" }).catch(function () {});
+      };
+
+      if (status === "completed" || status === "daily_limit_reached" || status === "session_expired" || status === "stopped") {
+        // These need you to act (download, upload fresh cookies, or
+        // click Start Validation again) before more batches make
+        // sense - don't loop through them.
+        stopAutoRun();
+        return;
+      }
+
+      var autoRunning = localStorage.getItem(AUTO_KEY) === "1";
+      if (!autoRunning || !form) return;
+
+      var lastProcessed = parseInt(localStorage.getItem(LAST_PROCESSED_KEY) || "-1", 10);
+      var stallCount = parseInt(localStorage.getItem(STALL_KEY) || "0", 10);
+      stallCount = (processed === lastProcessed) ? stallCount + 1 : 0;
+      localStorage.setItem(STALL_KEY, String(stallCount));
+      localStorage.setItem(LAST_PROCESSED_KEY, String(processed));
+
+      if (stallCount >= STALL_LIMIT) {
+        stopAutoRun(
+          "Auto-run stopped: no progress on the last " + STALL_LIMIT +
+          " batches - check the message above (likely an error), " +
+          "fix it, then click \"Start Validation\" to try again."
+        );
+        return;
+      }
+
+      if (startBtn) { startBtn.disabled = true; startBtn.textContent = "Validating… (" + processed + "/" + total + ")"; }
+      if (stopBtn) stopBtn.style.display = "";
+      setStatusText("Auto-validating - keep this tab open. " + processed + " of " + total + " done so far.");
+
+      setTimeout(function () { form.submit(); }, 400);
+    })();
+  </script>
 
 {% endif %}
 

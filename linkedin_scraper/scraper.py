@@ -335,13 +335,34 @@ def open_profile(url, page=None, wait_ms=3000):
     # Raise immediately so the caller can stop using this session
     # and rotate to a different LinkedIn account instead of
     # quietly burning through the rest of the batch.
-    if "authwall" in final_url.lower() or "/login" in final_url.lower():
+    #
+    # Same deal for a "checkpoint" URL - LinkedIn's rate-limit/
+    # "unusual activity" interstitial (a verification code prompt
+    # or "is this you?" puzzle), same page browser.py already
+    # handles during the INITIAL login flow. That handling only
+    # covers session start-up though - mid-batch, LinkedIn can
+    # still redirect a profile navigation to a checkpoint page
+    # after too many rapid requests, and without this check that
+    # checkpoint page just got scraped like a blank profile: no
+    # name, no job title, no company, no country - which is what
+    # produced runs of several contacts in a row all coming back
+    # "INVALID - NAME, COMPANY, JOB TITLE, COUNTRY UNKNOWN, NO
+    # LONGER" (confirmed from a real run: Brian Mcelyea, Chad
+    # Wasserman, David D., Duane Lovelace, Erica Rocha, Evelyn
+    # Franco-Motta all failed identically in a row). A real, no
+    # longer employed lead fails on its OWN - it never takes out
+    # five unrelated contacts after it in lockstep like that.
+    if (
+        "authwall" in final_url.lower()
+        or "/login" in final_url.lower()
+        or "checkpoint" in final_url.lower()
+    ):
 
         raise SessionExpiredError(
-            "LinkedIn session is no longer logged in (hit the "
-            "authwall/login page). Cookies have expired or this "
-            "account was logged out - needs a fresh login/cookies "
-            "file, not a retry."
+            "LinkedIn session hit the authwall/login/checkpoint "
+            "page. Cookies have expired, this account was logged "
+            "out, or LinkedIn is asking for extra verification - "
+            "needs a fresh login/cookies file, not a retry."
         )
 
 
@@ -489,7 +510,25 @@ def get_linkedin_details(url, excel_job="", page=None, raise_errors=False):
                 )
             ):
 
-                exp_text = get_experience_details_text(url, page)
+                # Use page.url (where open_profile() actually landed),
+                # NOT the original `url` argument. For a URN-style
+                # link (linkedin.com/in/ACwAA...) LinkedIn resolves
+                # the real vanity URL via a client-side redirect on
+                # the MAIN profile page, but that redirect never
+                # touches `url` itself - it's still the raw URN
+                # string. Building the detail-page URL by appending
+                # "/details/experience/" to that URN base hits
+                # LinkedIn's generic "Something went wrong - Refresh
+                # the page" error page instead of the real experience
+                # list (confirmed on two real profiles - Andrew Hub
+                # and Austin Bolles, both from URN-style sheet links -
+                # where this produced an identical ~1266-character
+                # error page for both, versus a correct ~4200-char
+                # experience list when built from page.url instead).
+                # Since parsed_data["full_name"] is already known good
+                # at this point (checked above), the page reliably
+                # finished resolving before we get here.
+                exp_text = get_experience_details_text(page.url, page)
 
                 if exp_text:
 
@@ -673,6 +712,24 @@ def get_linkedin_details(url, excel_job="", page=None, raise_errors=False):
             print(
                 "Current Employee:",
                 "YES" if result["current_employee"] else "NO"
+            )
+
+            # Was missing from this summary even though it's a real
+            # field that feeds validate_lead() and can add REMOTE/
+            # CONTRACT/PART-TIME/etc. to the INVALID reasons - a lead
+            # could come back INVALID - REMOTE with nothing here
+            # explaining why, since this print block never showed
+            # employment_flags at all (only debug_profile.py's own
+            # separate summary loop happened to print it, by dumping
+            # every dict key generically).
+            print(
+                "Employment Flags:",
+                result.get("employment_flags", [])
+            )
+
+            print(
+                "Open To Flags:",
+                result.get("open_to_flags", [])
             )
 
             print("Company URL:", result["company_linkedin_url"])

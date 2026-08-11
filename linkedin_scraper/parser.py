@@ -452,6 +452,29 @@ def is_location(line):
     if any(piece in US_STATE_ABBREVIATIONS for piece in pieces):
         return True
 
+    # A genuine location line's pieces are just place names - it
+    # never also contains job-title words like "Vice President" /
+    # "Director" / "Manager". A line such as "Vice President,
+    # Technology Sourcing Operations, Canada" has "Canada" sitting
+    # as its OWN comma-separated piece (which the check below would
+    # otherwise accept), but it's describing a ROLE's regional
+    # scope, not where someone lives - confirmed on a real profile
+    # (Bonnie Luton) whose entire job title got stripped as noise
+    # this way, leaving job_title/company_name blank even though a
+    # correct, current, dated role was right there. This is a
+    # narrower case than the "US, Canada and Caribbean" bug already
+    # guarded against above (JOB_TITLE_WORDS check via country_names
+    # substring) - here the country name genuinely occupies its own
+    # piece, so that earlier guard doesn't catch it. Only apply this
+    # guard to the country/state piece match below, not the
+    # wrapper-word/US-state-abbreviation checks above, since those
+    # aren't implicated in this failure.
+    if any(
+        re.search(r"\b" + re.escape(word) + r"\b", line)
+        for word in JOB_TITLE_WORDS
+    ):
+        return False
+
     return any(
         piece in country_names or piece in LOCATION_TO_COUNTRY
         for piece in pieces
@@ -946,8 +969,37 @@ def extract_header(profile_text):
     # --------------------------------
     # Find Location
     # --------------------------------
+    #
+    # Only search the profile's own header area - up to the
+    # "Experience" heading, or any sidebar/feed noise marker,
+    # whichever comes first. This loop previously scanned the
+    # ENTIRE (unbounded) lines list, so on a profile whose
+    # Experience section is short, the first is_location()-matching
+    # line anywhere on the WHOLE page could belong to a suggested
+    # company page in the right-rail "You might like" panel (e.g.
+    # "Paris, France" as Capgemini's HQ line) and get misread as the
+    # contact's own location - confirmed on a real profile (Frances
+    # Portalatin, an Apopka, FL banker whose Country came back
+    # "France" this way).
+
+    header_lines = []
 
     for line in lines:
+
+        lower = line.lower().strip()
+
+        if (
+            lower in ("experience", "work experience")
+            or lower in _SIDEBAR_MARKERS
+            or any(m in lower for m in _SIDEBAR_MARKERS_CONTAINS)
+            or _FEED_TIMESTAMP_PATTERN.match(lower)
+        ):
+
+            break
+
+        header_lines.append(line)
+
+    for line in header_lines:
 
         if is_location(line):
 
@@ -1297,6 +1349,16 @@ _SIDEBAR_MARKERS = [
     "people who can introduce you",
     "top qualities",
     "show all posts",
+    # Right-rail "Pages for you" / "You might like" panel of
+    # suggested company pages - confirmed from a real profile
+    # (Frances Portalatin) whose Experience section was short
+    # enough that this panel's content (a suggested company page,
+    # e.g. Capgemini, with its own "Paris, France" HQ line) fell
+    # inside the fixed lines[start:start+40] Experience window and
+    # got misread as the contact's own location, wrongly setting
+    # Country to "France" for a Florida (Apopka office) banker.
+    "you might like",
+    "pages for you",
 ]
 
 # Same idea as _SIDEBAR_MARKERS, but these only ever appear as part
@@ -1417,8 +1479,32 @@ def get_experience_lines(profile_text):
         return [], False
 
 
-    # Read only latest experience block
-    exp = lines[start:start + 40]
+    # Read only latest experience block. Cap at 40 lines, but never
+    # read past the first sidebar/feed marker after the Experience
+    # heading either, even when the heading WAS found normally -
+    # previously this cutoff only applied in the "heading not found"
+    # branch above, so a short Experience section (few roles, no
+    # long descriptions) could run straight into the right-rail
+    # "You might like" panel of suggested company pages within the
+    # same 40-line window, and its content (e.g. a suggested
+    # company's "Paris, France" HQ line) got misread as the
+    # contact's own profile content.
+    end = start + 40
+
+    for i in range(start, min(end, len(lines))):
+
+        lower = lines[i].lower().strip()
+
+        if (
+            lower in _SIDEBAR_MARKERS
+            or any(m in lower for m in _SIDEBAR_MARKERS_CONTAINS)
+            or _FEED_TIMESTAMP_PATTERN.match(lower)
+        ):
+
+            end = i
+            break
+
+    exp = lines[start:end]
 
 
     print("\n========== EXPERIENCE ==========")
