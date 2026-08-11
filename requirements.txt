@@ -1,5 +1,5 @@
 pandas
-openpyxl2
+openpyxl
 apify-client
 playwright==1.60.0
 
