@@ -5,7 +5,17 @@
 <div class="card">
   <h2>LinkedIn login</h2>
 
-  {% if login_pending %}
+  {% if is_hosted %}
+    <p class="muted small">
+      {% if has_cookies %}<span class="tag ok">saved cookies.json on server</span>{% endif %}
+      This is a hosted deployment, so there's no way to click through
+      a LinkedIn login here - the browser would open on the server,
+      not on your screen. Run this app on your own machine (or
+      <code>python login.py</code>) once to log in by hand, then
+      upload the <code>cookies.json</code> it saves using the file
+      upload below.
+    </p>
+  {% elif login_pending %}
     <p class="muted">
       A LinkedIn login window opened on this machine. Switch to it,
       log in, then come back here.

@@ -37,6 +37,13 @@ spec:
           env:
             - name: PORT
               value: "8000"
+            # Tells the GUI to hide the "Log in to LinkedIn" button
+            # (see webapp/app.py's is_hosted_deployment()) - on
+            # Render this is detected automatically via Render's own
+            # RENDER env var, but Kubernetes/Rancher has no
+            # equivalent, so it's set explicitly here.
+            - name: HOSTED_DEPLOYMENT
+              value: "true"
           volumeMounts:
             - name: data
               mountPath: /app/webapp/data

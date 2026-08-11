@@ -148,6 +148,29 @@ _login_browser = None
 _login_context = None
 
 
+def is_hosted_deployment() -> bool:
+    # Used to hide/disable the "Log in to LinkedIn" button server-side
+    # instead of just warning about it in the help text next to it.
+    # Without this, clicking it on Render/Rancher used to "succeed"
+    # (Playwright launches fine - the container runs the whole app
+    # under Xvfb, see Dockerfile) and flash "A LinkedIn login window
+    # opened on this machine, log in there" - but that window is on
+    # the server's virtual display, which nobody can see or type
+    # into, so no LinkedIn login page ever appears to the person who
+    # clicked the button. That looked like a silent failure/bug
+    # rather than the inherent limitation it actually is.
+    #
+    # RENDER is set automatically by Render on every service
+    # (https://render.com/docs/environment-variables#all-runtimes).
+    # There's no Kubernetes/Rancher equivalent, so k8s/deployment.yaml
+    # sets HOSTED_DEPLOYMENT=true explicitly for that path.
+    return bool(
+        os.environ.get("RENDER")
+        or os.environ.get("HOSTED_DEPLOYMENT", "").strip().lower()
+        in ("1", "true", "yes")
+    )
+
+
 # ==================================================
 # Flask-style flash messages, backed by the signed
 # session cookie (SessionMiddleware) instead of Flask's
@@ -344,6 +367,7 @@ async def dashboard(request: Request, _auth: None = Depends(login_required)):
         meta=meta,
         has_cookies=os.path.exists(COOKIES_PATH),
         login_pending=_login_state["active"],
+        is_hosted=is_hosted_deployment(),
         max_experience_years=getattr(config, "MAX_EXPERIENCE_YEARS", None),
         daily_lead_limit=getattr(config, "DAILY_LEAD_LIMIT", 90),
         enrichment_labels=enrichment_labels,
@@ -776,6 +800,24 @@ async def update_cookies(
 def login_linkedin_start(request: Request, _auth: None = Depends(login_required)):
 
     global _login_playwright, _login_browser, _login_context
+
+    if is_hosted_deployment():
+        # Don't even attempt the launch here - Playwright would
+        # actually succeed (this container runs under Xvfb), which
+        # used to produce a misleading "log in there" success
+        # message for a browser window nobody could see. See
+        # is_hosted_deployment()'s comment.
+        flash(
+            request,
+            "\"Log in to LinkedIn\" only works when running this app "
+            "on your own machine, since the login window opens on "
+            "whichever machine runs the server - there's nothing to "
+            "click here on a hosted deployment. Instead: run this app "
+            "locally (or `python login.py`) once to log in by hand, "
+            "then upload the cookies.json it saves using the file "
+            "upload below.",
+        )
+        return redirect_to(request, "dashboard")
 
     if _login_state["active"]:
         flash(request, "A LinkedIn login window is already open - finish or cancel it below.")
