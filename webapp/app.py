@@ -33,6 +33,7 @@ import asyncio
 import datetime
 import threading
 import concurrent.futures
+import traceback
 from typing import Optional
 
 # Windows + `uvicorn --reload` (WatchFiles) resets the asyncio
@@ -713,6 +714,19 @@ def _run_batch(request: Request):
     try:
         start_browser(cookie_file=COOKIES_PATH)
     except Exception as e:
+        # Full traceback + thread name to Render's log (never to the
+        # flash banner, which only shows str(e)) - this is the only
+        # way to tell WHERE inside start_browser() this actually came
+        # from, and to confirm this really executed on
+        # _playwright_executor's dedicated thread (should print
+        # "playwright-worker_0" below) rather than falling back to
+        # the request's own threadpool thread some other way.
+        print(
+            f"[_run_batch] start_browser() failed on thread "
+            f"'{threading.current_thread().name}':"
+        )
+        traceback.print_exc()
+
         msg = f"Browser start error: {e}"
         # A credentials-based auto-login (see linkedin_scraper/browser.py's
         # login_linkedin_with_credentials) that hits a LinkedIn
@@ -996,7 +1010,8 @@ def login_linkedin_start(request: Request, _auth: None = Depends(login_required)
     except Exception as e:
         _playwright_executor.submit(_close_login_browser).result()
         _batch_lock.release()
-        print("login-linkedin/start failed:", repr(e))
+        print("login-linkedin/start failed on thread", threading.current_thread().name, ":", repr(e))
+        traceback.print_exc()
         flash(request, f"Could not open the LinkedIn login window: {type(e).__name__}: {e}")
         return redirect_to(request, "dashboard")
 
