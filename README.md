@@ -80,8 +80,9 @@ with `python -m venv .venv` if you don't have it yet).
    batches. Stop the server with `Ctrl+C`.
 
 This uses a real (visible) browser window for the LinkedIn scraping
-- same as running `main.py` from the terminal - since it's the
-Docker image, not this local run, that hides it behind Xvfb.
+- same as running `main.py` from the terminal. Only the Docker image
+(used for Render/Kubernetes) runs headless - see "Deploy to Render"
+below.
 
 ### Deploy to Rancher / Kubernetes
 
@@ -101,25 +102,103 @@ in-progress job survives a pod restart) and a `/healthz` endpoint
 for readiness/liveness probes - see that file for sizing/scaling
 notes (this app is designed to run as a single replica).
 
-### Deploy to Render (still supported)
+### Deploy to Render (Free tier)
 
-`render.yaml` still works unchanged - it just points at the same
-`Dockerfile`, and Render only cares that the container listens on
-`$PORT`.
+`render.yaml` points at the same `Dockerfile`; Render only cares that
+the container listens on `$PORT`. On Render (and on Kubernetes, via
+`HOSTED_DEPLOYMENT=true`), the app auto-detects it's hosted and runs
+Chromium `headless=True` - no visible window, no Xvfb, low enough
+memory to fit Render's free 512MB.
 
-1. Push this repo to GitHub (see **Before you push** below first).
+Because Render's free plan has no persistent disk, anything written
+to `webapp/data/` (an uploaded `cookies.json` included) is wiped on
+every restart / ~15-minute idle spin-down. **Render Secret Files**
+are the free, persistent exception to that, and are how this app is
+meant to get your LinkedIn session onto a hosted deployment - not by
+storing a username/password anywhere.
+
+#### 1. Generate the session locally (once, on your own machine)
+
+```powershell
+.venv\Scripts\Activate.ps1
+python login.py
+```
+
+A real, visible Chromium window opens to the LinkedIn login page. Log
+in by hand (this is the only place a password is ever typed - never
+in source code, never on the server), then press ENTER in the
+terminal when the home feed loads. This saves `cookies.json` (or
+whatever filename you choose) in the project root. It is gitignored
+(`cookies*.json` in `.gitignore`) and must never be committed.
+
+#### 2. Verify the session works
+
+```powershell
+python verify_session.py cookies.json
+```
+
+This launches a **headless** browser, loads the saved session, and
+confirms it actually reaches the LinkedIn feed instead of the login
+wall - no cookies/tokens are ever printed. Fix with step 1 again if
+it reports expired.
+
+#### 3. Configure Render
+
+1. Push this repo to GitHub (see **Before you push** below first -
+   this repo's history needs a look before it's public/shared).
 2. In the [Render dashboard](https://dashboard.render.com/), click
    **New +** → **Blueprint**, and point it at this repo. Render
    reads `render.yaml` and `Dockerfile` and sets everything up.
+   (No Blueprint? **New +** → **Web Service** → connect the repo →
+   environment **Docker**.)
 3. Under the new service's **Environment** tab, set `APP_PASSWORD`
    to whatever password you want the GUI to require. (`SECRET_KEY`
    is generated for you automatically.)
-4. Deploy. Once it's live, open the service URL, log in, and start
-   a job the same way as local usage above.
+4. Same **Environment** tab → **Secret Files** → **Add Secret File**:
+   - **Filename:** `linkedin_storage_state.json`
+   - **Contents:** paste the entire contents of your local
+     `cookies.json` from step 1.
 
-No Blueprint? You can instead create the service by hand: **New +**
-→ **Web Service** → connect the repo → environment **Docker** → set
-`APP_PASSWORD` under Environment → deploy.
+   Secret Files are never part of `render.yaml` or any committed
+   file - they're pasted directly into Render's dashboard/API, kept
+   out of git entirely, and (unlike `webapp/data/`) survive restarts
+   and redeploys. Render mounts it at
+   `/etc/secrets/linkedin_storage_state.json` by default, which is
+   exactly the path `linkedin_scraper/browser.py` looks for.
+
+   *If your session file is unusually small* (rare for LinkedIn),
+   you can instead set the env var `LINKEDIN_STORAGE_STATE_B64` to
+   the base64 of `cookies.json`'s contents
+   (`[Convert]::ToBase64String([IO.File]::ReadAllBytes("cookies.json")) | Set-Clipboard`
+   in PowerShell) - but most real sessions exceed Render's env var
+   size limit, so the Secret File above is the supported path.
+
+#### 4. Deploy
+
+```
+git push
+```
+
+Render auto-deploys on push. On boot, the app copies the Secret
+File into `webapp/data/cookies.json` automatically (see
+`bootstrap_session_from_secret()` in `linkedin_scraper/browser.py`) -
+no manual upload needed, even after a restart. Open the service URL,
+log in with `APP_PASSWORD`, and start a job.
+
+#### When the session expires
+
+LinkedIn sessions eventually expire, and Render's IP differs from
+your home/office IP, which can make LinkedIn ask for re-verification
+sooner than you're used to locally - this is expected, not a bug, and
+there's no way to automate past LinkedIn's verification/CAPTCHA (nor
+should there be). When a batch reports "session expired":
+
+1. Locally: `python login.py` again, then `python verify_session.py cookies.json`.
+2. In the Render dashboard, edit the Secret File's contents to the
+   new `cookies.json` (triggers a redeploy) - this is what makes the
+   fix survive the *next* restart too.
+3. For a same-session, no-redeploy quick fix in the meantime, the
+   dashboard's own "Update cookies" upload still works as before.
 
 ### How a job works in the GUI
 
@@ -143,14 +222,16 @@ No Blueprint? You can instead create the service by hand: **New +**
 
 ### Known limitations of the hosted version
 
-- **Free Render plan = no persistent disk.** Render's free web
-  services don't keep local files across a restart, and the service
-  spins down after ~15 minutes idle. An in-progress job's working
-  file and uploaded cookies are lost on the next spin-up - download
-  your output after each batch, and keep `cookies.json` handy to
-  re-upload. A paid Render plan + attached disk (commented out in
-  `render.yaml`), or the Rancher/Kubernetes deployment above (which
-  includes a PersistentVolumeClaim by default), avoids this.
+- **Free Render plan = no persistent disk for job state.** `webapp/data/`
+  (the in-progress Excel file, `job_meta.json`, any saved LinkedIn
+  auto-login credentials) is wiped on restart/idle spin-down -
+  download your output after each batch. The LinkedIn *session*
+  itself is the exception: it's restored automatically from a Render
+  Secret File on every boot (see "Deploy to Render" above), so that
+  part specifically does NOT need re-uploading after a restart. A
+  paid Render plan + attached disk (commented out in `render.yaml`),
+  or the Rancher/Kubernetes deployment above (PersistentVolumeClaim
+  by default), avoids the rest of this for job state too.
 - **Batch size vs. request timeouts.** Any proxy/ingress in front of
   this app (Render's, or an nginx Ingress on Kubernetes) cuts off
   HTTP requests that run too long. The Playwright scraper takes
@@ -161,10 +242,13 @@ No Blueprint? You can instead create the service by hand: **New +**
   multiple concurrent users.
 - **2FA/checkpoints can't be solved by hand.** Locally, a visible
   browser window lets you solve a LinkedIn verification challenge
-  yourself. On Render the browser runs in a virtual display (Xvfb)
-  with nobody watching, so a checkpoint will just time out after 3
-  minutes. Make sure `cookies.json` is a currently-valid, already
-  logged-in session before uploading it.
+  yourself. On Render the browser runs fully headless with nobody
+  watching, so a checkpoint will just time out after 3 minutes -
+  there's no way to automate past it, nor should there be. Make sure
+  `cookies.json` is a currently-valid, already logged-in session
+  (`python verify_session.py cookies.json`) before uploading/deploying
+  it. Render's IP also differs from your own, which can make LinkedIn
+  ask for re-verification sooner than you're used to locally.
 - **No "Log in to LinkedIn" button on hosted deployments.** That
   button opens a real browser window on whatever machine runs the
   server - useful locally, meaningless on Render/Rancher since the
@@ -172,9 +256,21 @@ No Blueprint? You can instead create the service by hand: **New +**
   automatically there (Render is detected via Render's own `RENDER`
   env var; the Kubernetes/Rancher manifests set `HOSTED_DEPLOYMENT=true`
   explicitly - see `k8s/deployment.yaml`) and shows only the
-  `cookies.json` upload field. To get a `cookies.json`, run this app
-  locally (or `python login.py`) once, log in by hand, then upload
-  the file it saves to the hosted instance.
+  `cookies.json` upload field. To get a `cookies.json`, run
+  `python login.py` locally once, log in by hand, then either upload
+  the file it saves to the hosted instance for a quick same-boot fix,
+  or (recommended, survives restarts) put it in a Render Secret File
+  as described above.
+- **Auto-login with email/password (alternative to cookies.json).**
+  The dashboard's "LinkedIn login" card also lets you save a
+  LinkedIn email/password directly - the server then logs in
+  automatically whenever a batch starts without a valid session,
+  which is the only way to authenticate a hosted deployment without
+  ever running the app locally. Credentials are stored in plaintext
+  on the server's disk (`webapp/data/linkedin_credentials.json`,
+  same persistence caveats as `cookies.json` above) - use "Clear
+  saved credentials" when you're done, and note the 2FA/checkpoint
+  limitation above still applies to this login just like any other.
 
 ### Before you push: existing secrets in this repo
 

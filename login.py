@@ -41,4 +41,17 @@ with sync_playwright() as p:
         f"{save_path} saved successfully"
     )
 
+    print(
+        f"\nReminder: {save_path} is your live LinkedIn session - "
+        f"never commit it to git (it's gitignored via the "
+        f"'cookies*.json' pattern already, but double-check "
+        f"`git status` if you ever rename/move it)."
+    )
+    print(
+        "Next: `python verify_session.py "
+        f"{save_path}` to confirm it works, then see README.md's "
+        "\"Deploying to Render\" section to put it in a Render "
+        "Secret File."
+    )
+
     browser.close()

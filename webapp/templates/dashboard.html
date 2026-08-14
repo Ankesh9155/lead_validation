@@ -42,6 +42,37 @@
       <button class="btn btn-secondary" type="submit">Log in to LinkedIn</button>
     </form>
   {% endif %}
+
+  <div class="linkedin-credentials">
+    <h3>Auto-login with email/password</h3>
+    <p class="muted small">
+      {% if has_linkedin_credentials %}<span class="tag ok">credentials saved ({{ saved_linkedin_email }})</span>{% endif %}
+      Optional. If saved, the server logs in automatically whenever a
+      batch starts without a valid LinkedIn session (missing or
+      expired cookies.json) - the only way to authenticate a hosted
+      deployment without running the app locally first. LinkedIn may
+      still challenge a fresh login with a verification code; on a
+      hosted deployment nobody can solve that, so the attempt will
+      just time out after 3 minutes - upload a cookies.json from a
+      normal browser session instead if that keeps happening.
+    </p>
+    <form method="post" action="{{ url_for('update_linkedin_credentials') }}" class="form-grid">
+      <div class="field">
+        <label for="linkedin_email">LinkedIn email</label>
+        <input type="email" id="linkedin_email" name="linkedin_email" placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label for="linkedin_password">LinkedIn password</label>
+        <input type="password" id="linkedin_password" name="linkedin_password">
+      </div>
+      <button class="btn btn-secondary" type="submit">Save credentials</button>
+    </form>
+    {% if has_linkedin_credentials %}
+      <form method="post" action="{{ url_for('clear_linkedin_credentials') }}" class="inline-form">
+        <button class="btn btn-danger" type="submit">Clear saved credentials</button>
+      </form>
+    {% endif %}
+  </div>
 </div>
 
 {% if not meta %}

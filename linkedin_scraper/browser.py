@@ -2,6 +2,9 @@
 
 from playwright.sync_api import sync_playwright
 import os
+import shutil
+import base64
+import json
 
 
 # Global browser objects
@@ -9,6 +12,141 @@ playwright = None
 browser = None
 context = None
 page = None
+
+
+# ==========================================
+# Hosted-Deployment Detection
+#
+# Single source of truth for "is this process running on a hosted
+# platform (Render/Kubernetes) with nobody able to see a browser
+# window, vs. someone's own machine". webapp/app.py imports this
+# instead of keeping its own copy, since headless mode (below) needs
+# the exact same check.
+#
+# RENDER is set automatically by Render on every service
+# (https://render.com/docs/environment-variables#all-runtimes) - no
+# config needed. There's no Kubernetes/Rancher equivalent, so
+# k8s/deployment.yaml sets HOSTED_DEPLOYMENT=true explicitly.
+# ==========================================
+
+def is_hosted_deployment() -> bool:
+
+    return bool(
+        os.environ.get("RENDER")
+        or os.environ.get("HOSTED_DEPLOYMENT", "").strip().lower()
+        in ("1", "true", "yes")
+    )
+
+
+# ==========================================
+# Headless Mode
+#
+# Local runs (main.py, login.py, debug_profile.py, the "Log in to
+# LinkedIn" dashboard button) keep the original real/visible browser
+# window - unchanged. On a hosted deployment (Render/Rancher) there
+# is nobody to see that window, and Render's free tier has only
+# 512MB RAM, so a real headless=True Chromium (no Xvfb virtual
+# display needed) is both the only usable option and far lighter.
+#
+# PLAYWRIGHT_HEADLESS is an explicit escape hatch (e.g. to force
+# headless=True while testing locally) - set it to "1"/"true" or
+# "0"/"false" to override the automatic hosted-deployment detection.
+# ==========================================
+
+def _headless_mode() -> bool:
+
+    override = os.environ.get("PLAYWRIGHT_HEADLESS", "").strip().lower()
+
+    if override in ("1", "true", "yes"):
+        return True
+
+    if override in ("0", "false", "no"):
+        return False
+
+    return is_hosted_deployment()
+
+
+# ==========================================
+# Bootstrap Session From Render Secret File / Env Var
+#
+# Render's free web services have an EPHEMERAL filesystem - anything
+# written to disk (including a cookies.json uploaded through the
+# dashboard) is wiped on every restart / idle spin-down. Render
+# Secret Files are the free, persistent exception: a file you paste
+# into the Render dashboard (Environment -> Secret Files), never
+# committed to git, that Render re-mounts at a fixed path on every
+# boot, including after a restart.
+#
+# This copies that Secret File's contents into `cookie_file` (e.g.
+# webapp/data/cookies.json) once at process startup, so a freshly
+# booted container starts already authenticated with no manual
+# re-upload needed. If no Secret File is present, falls back to a
+# base64-encoded LINKEDIN_STORAGE_STATE_B64 env var (only suitable
+# for very small storage_state files - see README).
+#
+# Never logs cookie/session content - only filenames and outcomes.
+# ==========================================
+
+DEFAULT_SECRET_FILE_PATH = "/etc/secrets/linkedin_storage_state.json"
+
+
+def bootstrap_session_from_secret(cookie_file) -> bool:
+
+    secret_path = os.environ.get(
+        "LINKEDIN_STORAGE_STATE_PATH", ""
+    ).strip() or DEFAULT_SECRET_FILE_PATH
+
+    if os.path.exists(secret_path):
+
+        try:
+
+            os.makedirs(os.path.dirname(cookie_file) or ".", exist_ok=True)
+            shutil.copyfile(secret_path, cookie_file)
+
+            print(
+                f"Loaded LinkedIn session from Secret File "
+                f"({os.path.basename(secret_path)})."
+            )
+
+            return True
+
+        except Exception as e:
+
+            print(
+                "Could not load LinkedIn session from Secret File:",
+                type(e).__name__,
+            )
+
+    b64 = os.environ.get("LINKEDIN_STORAGE_STATE_B64", "").strip()
+
+    if b64:
+
+        try:
+
+            raw = base64.b64decode(b64)
+
+            # Validate it's real storage_state JSON before writing -
+            # a bad/partial env var value should never silently
+            # produce a corrupt cookies.json.
+            json.loads(raw)
+
+            os.makedirs(os.path.dirname(cookie_file) or ".", exist_ok=True)
+
+            with open(cookie_file, "wb") as f:
+                f.write(raw)
+
+            print("Loaded LinkedIn session from LINKEDIN_STORAGE_STATE_B64.")
+
+            return True
+
+        except Exception as e:
+
+            print(
+                "Could not decode LINKEDIN_STORAGE_STATE_B64:",
+                type(e).__name__,
+            )
+
+    return False
 
 
 # ==========================================
@@ -185,7 +323,7 @@ def start_browser(cookie_file="cookies.json"):
 
 
     browser = playwright.chromium.launch(
-        headless=False,
+        headless=_headless_mode(),
         slow_mo=0
     )
 
@@ -287,7 +425,7 @@ def launch_worker_browser(cookie_file="cookies.json"):
     pw = sync_playwright().start()
 
     br = pw.chromium.launch(
-        headless=False,
+        headless=_headless_mode(),
         slow_mo=0
     )
 

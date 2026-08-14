@@ -10,7 +10,13 @@ env/
 !.env.example
 
 # Local LinkedIn session + usage tracking
+# Wildcarded (not just the literal cookies.json) because
+# ask_next_linkedin_account() in main.py lets you save a second/third
+# rotated account's session under any filename (e.g. cookies2.json) -
+# a literal-only pattern would silently let one of those get committed.
 cookies.json
+cookies*.json
+*storage_state*.json
 linkedin_usage.json
 
 # Web GUI runtime data

@@ -32,8 +32,8 @@ services:
     # webapp/data/ (uploaded cookies, the in-progress Excel file,
     # job_meta.json) is wiped whenever the container restarts -
     # including after the free plan's 15-minute idle spin-down.
-    # Download your output after every batch, and keep a copy of
-    # cookies.json handy to re-upload if a job gets interrupted.
+    # Download your output after every batch.
+    #
     # To keep that state across restarts, upgrade this service's
     # plan and add a persistent disk, e.g.:
     #
@@ -41,3 +41,41 @@ services:
     #   name: lead-validator-data
     #   mountPath: /app/webapp/data
     #   sizeGB: 1
+
+    # --------------------------------------------------------------
+    # LinkedIn session persistence (free, works on the free plan) -
+    # NOT declared here on purpose. Render "Secret Files" are added
+    # by hand in the dashboard (Environment tab -> Secret Files),
+    # never through a file that gets committed to git, since that
+    # would defeat the whole point of keeping the session out of
+    # source control.
+    #
+    # Setup (see README.md "Deploying to Render" for the full walk-
+    # through):
+    #   1. Run `python login.py` locally, log in by hand, note the
+    #      cookies.json it saves.
+    #   2. Run `python verify_session.py cookies.json` to confirm it
+    #      works.
+    #   3. In the Render dashboard: this service -> Environment ->
+    #      Secret Files -> Add Secret File.
+    #        Filename:   linkedin_storage_state.json
+    #        Mount path: /etc/secrets/linkedin_storage_state.json  (default)
+    #        Contents:   paste the full contents of cookies.json
+    #   4. Deploy/redeploy. linkedin_scraper/browser.py's
+    #      bootstrap_session_from_secret() copies it into
+    #      webapp/data/cookies.json automatically on every boot, so
+    #      the session survives restarts/spin-downs without any
+    #      manual re-upload.
+    #
+    # When the session expires, repeat steps 1-3 and update the
+    # Secret File's contents in the dashboard (this triggers a new
+    # deploy). For a quick same-boot fix without touching the Secret
+    # File, the dashboard's "Update cookies" upload still works too -
+    # it just won't survive the next restart on its own.
+    #
+    # Fallback for a very small storage_state file only: instead of a
+    # Secret File, you can set the env var LINKEDIN_STORAGE_STATE_B64
+    # to the base64-encoded contents of cookies.json. Most real
+    # LinkedIn sessions are too large for Render's environment
+    # variable size limit though - Secret Files above are the
+    # supported path.

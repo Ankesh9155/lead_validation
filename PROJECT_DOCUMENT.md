@@ -81,7 +81,7 @@ After scraping a VALID lead, if LinkedIn redirected the original URL to a canoni
 Progress is saved to the output Excel file every 25 contacts so work is never lost if the run is interrupted.
 
 ### Auto-login
-If `cookies.json` is missing or the LinkedIn session has expired, and `LINKEDIN_EMAIL` / `LINKEDIN_PASSWORD` are set in `config.py`, the tool logs in automatically and saves a fresh session file.
+If `cookies.json` is missing or the LinkedIn session has expired, and `LINKEDIN_EMAIL` / `LINKEDIN_PASSWORD` are set, the tool logs in automatically and saves a fresh session file. For the CLI these come from `config.py`; the web GUI (`webapp/`) instead lets you save them from the dashboard's "LinkedIn login" card (persisted to `webapp/data/linkedin_credentials.json`), which populates `config.LINKEDIN_EMAIL` / `config.LINKEDIN_PASSWORD` at startup and on every save/clear - see `webapp/app.py`'s `_apply_linkedin_credentials()`.
 
 ### Company Enrichment (VALID leads only)
 For every lead marked VALID, the tool performs a second scrape — this time on the company's own LinkedIn page. It navigates to the `/about/` section and extracts:

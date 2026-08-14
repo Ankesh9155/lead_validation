@@ -89,11 +89,17 @@ as described in the main README.
   cookies, in-progress Excel file, job progress) a 1Gi volume so it
   survives pod restarts, unlike the Render free-plan setup this
   replaces. Adjust the size or `storageClassName` for your cluster.
-- **Resource sizing.** The container runs a real Chromium browser
-  under Xvfb, which is heavier than a typical web app - the
-  `resources` block in `k8s/deployment.yaml` (768Mi request / 2Gi
-  limit) is a starting point; watch `kubectl top pod` under load and
-  adjust.
+- **Resource sizing.** The container runs a real headless Chromium
+  browser, which is heavier than a typical web app - the `resources`
+  block in `k8s/deployment.yaml` (768Mi request / 2Gi limit) is a
+  starting point; watch `kubectl top pod` under load and adjust.
+- **LinkedIn session persistence.** Unlike Render's free tier (which
+  has no persistent disk), the PVC above already keeps
+  `webapp/data/cookies.json` across pod restarts once it's been
+  uploaded once through the dashboard - a Secret File isn't required
+  here the way it is for Render, though `LINKEDIN_STORAGE_STATE_PATH`/
+  `LINKEDIN_STORAGE_STATE_B64` (see README.md) work here too if you'd
+  rather manage it via `k8s/secret.yaml`.
 - **Health checks.** `GET /healthz` (added in the FastAPI app) is
   what the readiness/liveness probes hit - it doesn't require login
   and doesn't touch the browser/job state.
