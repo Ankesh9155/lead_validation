@@ -32,6 +32,7 @@ import json
 import asyncio
 import datetime
 import threading
+import concurrent.futures
 from typing import Optional
 
 # Windows + `uvicorn --reload` (WatchFiles) resets the asyncio
@@ -137,6 +138,30 @@ _batch_lock = threading.Lock()
 # starts, and whatever finished already is already saved (see the
 # save_excel() call after the batch loop in _run_batch).
 _stop_event = threading.Event()
+
+# Dedicated, persistent single OS thread for every Playwright sync-API
+# call this app makes (both /run-batch and the /login-linkedin/* trio
+# below submit their Playwright work here instead of calling it
+# directly). Two separate Playwright rules make this necessary:
+#
+# 1. Playwright's sync API refuses to run on any thread that has ever
+#    had an asyncio event loop attached to it - "It looks like you are
+#    using Playwright Sync API inside the asyncio loop. Please use the
+#    Async API instead." FastAPI's own threadpool for `def` (sync)
+#    routes is powered by anyio's to_thread.run_sync, which DOES
+#    attach an event-loop reference to its worker threads (to support
+#    async callbacks) even though nothing here is async - so calling
+#    Playwright directly from a `def` route, as this app used to,
+#    intermittently hits that error. A plain concurrent.futures thread
+#    (never touched by anyio/asyncio) sidesteps it entirely.
+# 2. A browser/context/page may only ever be driven from the exact OS
+#    thread that created it (see launch_worker_browser()'s docstring
+#    in linkedin_scraper/browser.py) - max_workers=1 guarantees every
+#    submitted job runs on that same single thread, one at a time,
+#    which also happens to satisfy this.
+_playwright_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="playwright-worker"
+)
 
 # State for the "Log in to LinkedIn" button - runs the same flow as
 # login.py (a real, visible browser window you log into by hand),
@@ -606,7 +631,11 @@ async def start_job(
 # Plain `def` (not `async def`): this handler drives the real
 # Playwright browser synchronously for the whole batch (tens of
 # seconds), so FastAPI runs it in its worker threadpool instead of
-# blocking the single asyncio event loop other requests share.
+# blocking the single asyncio event loop other requests share. The
+# actual work is then handed off AGAIN to _playwright_executor (see
+# its comment above) - not because this thread can't do it, but
+# because FastAPI's own threadpool thread is exactly the kind of
+# thread Playwright's sync API refuses to run on.
 @app.post("/run-batch", name="run_batch")
 def run_batch(request: Request, _auth: None = Depends(login_required)):
 
@@ -615,7 +644,7 @@ def run_batch(request: Request, _auth: None = Depends(login_required)):
         return redirect_to(request, "dashboard")
 
     try:
-        return _run_batch(request)
+        return _playwright_executor.submit(_run_batch, request).result()
     finally:
         _batch_lock.release()
 
@@ -963,13 +992,9 @@ def login_linkedin_start(request: Request, _auth: None = Depends(login_required)
         return redirect_to(request, "dashboard")
 
     try:
-        _login_playwright = sync_playwright().start()
-        _login_browser = _login_playwright.chromium.launch(headless=False)
-        _login_context = _login_browser.new_context()
-        page = _login_context.new_page()
-        page.goto("https://www.linkedin.com/login")
+        _playwright_executor.submit(_open_login_browser).result()
     except Exception as e:
-        _close_login_browser()
+        _playwright_executor.submit(_close_login_browser).result()
         _batch_lock.release()
         print("login-linkedin/start failed:", repr(e))
         flash(request, f"Could not open the LinkedIn login window: {type(e).__name__}: {e}")
@@ -988,7 +1013,22 @@ def login_linkedin_start(request: Request, _auth: None = Depends(login_required)
     return redirect_to(request, "dashboard")
 
 
+def _open_login_browser():
+    # All Playwright calls - must only ever run on _playwright_executor's
+    # dedicated thread (see its comment near the top of this file).
+
+    global _login_playwright, _login_browser, _login_context
+
+    _login_playwright = sync_playwright().start()
+    _login_browser = _login_playwright.chromium.launch(headless=False)
+    _login_context = _login_browser.new_context()
+    page = _login_context.new_page()
+    page.goto("https://www.linkedin.com/login")
+
+
 def _close_login_browser():
+    # Also Playwright calls - same thread requirement as above. Every
+    # caller below already routes this through _playwright_executor.
 
     global _login_playwright, _login_browser, _login_context
 
@@ -1016,13 +1056,15 @@ def login_linkedin_finish(request: Request, _auth: None = Depends(login_required
         return redirect_to(request, "dashboard")
 
     try:
-        _login_context.storage_state(path=COOKIES_PATH)
+        _playwright_executor.submit(
+            _login_context.storage_state, path=COOKIES_PATH
+        ).result()
         flash(request, "cookies.json saved. Click \"Start Validation\" to resume.")
         _mark_cookies_refreshed("(saved via Log in to LinkedIn)")
     except Exception as e:
         flash(request, f"Could not save cookies - the login window may have been closed already: {e}")
     finally:
-        _close_login_browser()
+        _playwright_executor.submit(_close_login_browser).result()
         _login_state["active"] = False
         _batch_lock.release()
 
@@ -1035,7 +1077,7 @@ def login_linkedin_cancel(request: Request, _auth: None = Depends(login_required
     if not _login_state["active"]:
         return redirect_to(request, "dashboard")
 
-    _close_login_browser()
+    _playwright_executor.submit(_close_login_browser).result()
     _login_state["active"] = False
     _batch_lock.release()
 
