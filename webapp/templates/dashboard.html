@@ -104,13 +104,17 @@
 
       <div class="field">
         <label for="cookies_file">
-          LinkedIn cookies.json
+          LinkedIn cookies.json (optional)
           {% if has_cookies %}<span class="tag ok">saved copy on server</span>{% endif %}
         </label>
-        <input type="file" id="cookies_file" name="cookies_file" accept=".json" {{ "" if has_cookies else "required" }}>
-        {% if has_cookies %}
-          <p class="hint">Leave blank to reuse the cookies already saved on this server.</p>
-        {% endif %}
+        <input type="file" id="cookies_file" name="cookies_file" accept=".json">
+        <p class="hint">
+          {% if has_cookies %}
+            Leave blank to reuse the cookies already saved on this server (uploaded earlier, or restored automatically from a Render Secret File).
+          {% else %}
+            Leave blank to use saved LinkedIn credentials instead, if you've set those up below. If neither is available yet, starting the job will tell you so.
+          {% endif %}
+        </p>
       </div>
 
       <div class="field">
@@ -204,7 +208,7 @@
           Upload another account's <code>cookies.json</code> to keep going.
         </p>
         <form method="post" action="{{ url_for('update_cookies') }}" enctype="multipart/form-data" class="inline-form">
-          <input type="file" name="cookies_file" accept=".json" required>
+          <input type="file" name="cookies_file" accept=".json">
           <button class="btn" type="submit">Update cookies &amp; continue</button>
         </form>
       </div>
